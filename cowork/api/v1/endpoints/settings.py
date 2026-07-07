@@ -13,8 +13,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Annotated, Any, Optional
+
+from cowork.common.paths import cowork_home
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -279,7 +280,7 @@ async def recommended_models(session: SessionDep):
 
 # ── Raw .env access (legacy, used by Onboarding) ─────────────────────
 
-_ENV_PATH = Path.home() / ".cowork" / ".env"
+_ENV_PATH = cowork_home() / ".env"
 
 
 def _parse_dotenv_content(content: str) -> dict[str, str]:
