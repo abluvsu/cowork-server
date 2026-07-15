@@ -24,6 +24,7 @@ def _pkg_version(name: str) -> str | None:
 # COWORK_SERVER_OWNER. The app adopts an already-running server only when
 # this matches its own token, so one OS user's app can't drive another
 # user's sidecar on a shared loopback port (ENG-439). Empty when unset.
+@router.get("", response_model=dict)
 @router.get("/", response_model=dict)
 def health() -> dict:
     settings = get_user_settings()

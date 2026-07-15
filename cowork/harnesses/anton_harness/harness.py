@@ -6,11 +6,18 @@ import tempfile
 
 from cowork.common.logger import get_logger
 from cowork.harnesses.base import FileInputBlock, TextInputBlock, register
+from cowork.schemas.memory import MemoryScope
+from cowork.models.project import Project
 from cowork.harnesses.anton_harness.stream_formatter import ArtifactCreated, SkillCreated, format_responses_stream
 from cowork.models.conversation import Conversation
 from cowork.models.skill import Skill
 from cowork.harnesses.anton_harness.scratchpad_cell_replay import extract_scratchpad_cells_from_message_events
 from cowork.harnesses.anton_harness.settings import AntonHarnessSettings
+from enum import Enum
+
+class AntonMemoryCategory(str, Enum):
+    lesson = "lesson"
+    rule = "rule"
 
 
 logger = get_logger(__name__)
@@ -125,7 +132,7 @@ class AntonHarness:
                 label=skill.label,
                 name=skill.name,
                 description=skill.description or "",
-                when_to_use=skill.when_to_use or "",
+                when_to_use=skill.description or "",
                 declarative_md=skill.instructions,
                 created_at=skill.created_at.isoformat() if skill.created_at else datetime.now(timezone.utc).isoformat(),
                 provenance="cowork",  # Helps track which skills originated from cowork.

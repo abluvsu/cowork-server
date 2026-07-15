@@ -164,51 +164,6 @@ def migrate_env_to_db(session: Session) -> bool:
     return True
 
 
-# Legacy MindsHub host. The default base URL changed from https://mdb.ai to
-# https://api.mindshub.ai (cowork "new urls", 2026-05-14) — but only for NEW
-# seeds. No migration ever rewrote existing rows, and mdb.ai's /api/v1 path
-# now 404s, so any user who configured MindsHub before that flip is stuck
-# with a failing provider ("Endpoint not found — check the base URL") and no
-# UI field to correct it. This backfill closes that gap.
-_LEGACY_MINDS_HOSTS = ("https://mdb.ai", "http://mdb.ai")
-_CANONICAL_MINDS_URL = "https://api.mindshub.ai"
-
-
-def backfill_minds_url(session: Session) -> bool:
-    """Rewrite the legacy MindsHub host (mdb.ai) to api.mindshub.ai.
-
-    Touches both ``providers_json`` (the per-provider ``mindsUrl`` the
-    Test/ping uses) and the top-level ``minds_url``. Idempotent and
-    sentinel-free: it only modifies rows that still contain the legacy
-    host, so it is safe to run on every boot and self-heals rows that a
-    later stale "Save settings" might re-introduce.
-
-    Returns True if any row was rewritten.
-    """
-    svc = SettingService(session)
-    changed: list[str] = []
-    for key in ("providers_json", "minds_url"):
-        row = svc._fetch_row(key)
-        if row is None or "mdb.ai" not in row.value:
-            continue
-        new_val = row.value
-        for legacy in _LEGACY_MINDS_HOSTS:
-            new_val = new_val.replace(legacy, _CANONICAL_MINDS_URL)
-        if new_val != row.value:
-            row.value = new_val
-            session.add(row)
-            changed.append(key)
-    if changed:
-        session.commit()
-        invalidate_user_settings_cache()
-        logger.info(
-            "Backfilled legacy MindsHub host (mdb.ai -> api.mindshub.ai) in: %s",
-            ", ".join(changed),
-        )
-    return bool(changed)
-
-
-
 # Packaged skills shipped with cowork. Bump BUILTIN_SKILLS_VERSION when the
 # set changes; seeding re-runs only when the stored version is lower, so a
 # future release can ship more skills without touching ones the user edited

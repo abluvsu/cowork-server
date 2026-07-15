@@ -22,3 +22,11 @@ class CliConfig:
     supports_resume: bool = True
     supports_images: bool = False
     supports_mcp: bool = False
+    mcp_config_flag: str | None = None
+    """Flag that takes a path to a JSON file shaped
+    {"mcpServers": {name: {command, args, env}}}, e.g. Claude Code's
+    `--mcp-config <path>`. None means this CLI has no per-invocation
+    file-based MCP config (e.g. Codex reads MCP servers from its own
+    ~/.codex/config.toml instead) — supports_mcp may still be True to
+    describe the CLI's general capability, but BaseCliHarness only
+    injects servers when this flag is also set."""

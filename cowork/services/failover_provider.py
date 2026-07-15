@@ -74,6 +74,7 @@ class FailoverLLMProvider(LLMProvider):
         native_web_tools: set[str] | None = None,
     ) -> LLMResponse:
         attempts: list[tuple[str, Exception]] = []
+        last_empty_response = None
         for candidate in self._candidates:
             try:
                 response = await candidate.provider.complete(
@@ -85,12 +86,21 @@ class FailoverLLMProvider(LLMProvider):
                     max_tokens=max_tokens,
                     native_web_tools=native_web_tools if candidate.provider.native_web_tools() else None,
                 )
+                if not response.content and not response.tool_calls:
+                    logger.warning("Provider candidate %s returned empty completion, rotating", candidate.label)
+                    attempts.append((candidate.label, Exception("Empty completion")))
+                    last_empty_response = response
+                    self.last_served_by = candidate.label
+                    continue
+                
                 self.last_served_by = candidate.label
                 return response
             except _FAILOVER_EXCEPTIONS as exc:
                 logger.warning("Provider candidate %s failed, rotating: %s", candidate.label, exc)
                 attempts.append((candidate.label, exc))
                 continue
+        if last_empty_response is not None:
+            return last_empty_response
         raise AllCandidatesFailedError(attempts)
 
     async def stream(

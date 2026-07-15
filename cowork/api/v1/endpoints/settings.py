@@ -23,6 +23,7 @@ from sqlmodel import Session
 from cowork.db.session import get_session
 from cowork.schemas.base import CamelRequest
 from cowork.schemas.settings import SettingResponse, SettingUpsertRequest
+from cowork.common.settings.app_settings import RECOMMENDED_MODELS, RECOMMENDED_PAIR
 from cowork.services.providers import (
     check_config_status,
     ping_providers,
@@ -30,12 +31,8 @@ from cowork.services.providers import (
     validate_provider as validate_provider_svc,
 )
 from cowork.services.settings import SettingService
-from cowork.common.settings.app_settings import (
-    DIRECT_EFFORT_CATALOG,
-    RECOMMENDED_MODELS,
-    RECOMMENDED_PAIR,
-)
-from cowork.common.settings.user_settings import Provider, provider_api_key_str
+
+
 
 router = APIRouter()
 
@@ -106,8 +103,6 @@ def check_configured(session: SessionDep):
             return {"configured": True, "provider": row.type}
 
     s = SettingService(session).load()
-    if s.minds_api_key is not None:
-        return {"configured": True, "provider": "minds-cloud"}
     if s.anthropic_api_key is not None:
         return {"configured": True, "provider": "anthropic"}
     if s.openai_api_key is not None:
@@ -135,17 +130,12 @@ def install_status():
 
 @router.get("/reveal-key/{name}")
 def reveal_key(name: str, session: SessionDep):
-    field_map = {
-        "anthropic": "anthropic_api_key",
-        "openai": "openai_api_key",
-        "google_oauth_client_secret": "google_oauth_client_secret",
-    }
-    provider = name_map.get(name.lower())
-    if provider is None:
+    from cowork.common.settings.user_settings import UI_TYPE_TO_PROVIDER
+
+    if name.lower() not in UI_TYPE_TO_PROVIDER:
         raise HTTPException(status_code=404, detail="Unknown key name")
     s = SettingService(session).load()
-    # provider_api_key_str applies the gemini/openai-compatible → openai fallback.
-    return {"value": provider_api_key_str(s, provider)}
+    return {"value": resolve_stored_key(s, name.lower())}
 
 
 class _TestProvidersBody(BaseModel):

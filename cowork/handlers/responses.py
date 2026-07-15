@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from uuid import UUID
@@ -63,7 +64,7 @@ class ResponsesHandler:
             except ValueError:
                 logger.warning("Requested harness '%s' is not registered; using default '%s'",
                                 request.harness, self.harness.id)
-        await self.harness.sync_skills(SkillService(self.session).list_skills())
+        await self.harness.sync_skills(SkillService().list_skills())
 
         conversation_service = ConversationService(self.session)
         project_id = self._resolve_project_id(request)
@@ -133,7 +134,7 @@ class ResponsesHandler:
                 conversation_id=str(conversation.id),
                 turn_id=turn_id,
                 buffer=buffer,
-                producer_coro=self._produce(
+                producer_coro=self._run_produce(
                     conv_id=conversation.id,
                     harness_input=harness_input,
                     original_content=original_content,
@@ -200,14 +201,52 @@ class ResponsesHandler:
                 collected_text.append(data.get("delta", ""))
 
         conversation_service = ConversationService(self.session)
+        conversation = conversation_service.get_conversation(conv_id)
+        stream = self.harness.stream_response(
+            conversation=conversation,
+            input=harness_input,
+            model=model,
+            disabled_connections=disabled,
+        )
         harness_id = getattr(self.harness, 'id', None)
         assistant_message_id: UUID | None = None
         next_seq = 0
 
+        # Events awaiting a DB commit. Persisting per event paid a full
+        # SQLite fsync per token delta *inside the event loop*, stalling
+        # the stream on slow disks. Instead we accumulate and flush in one
+        # commit every DB_FLUSH_EVENTS events / DB_FLUSH_SECONDS, running
+        # the commit in a worker thread so token forwarding never blocks.
+        # Worst case on a hard crash: the last <250ms of events are lost —
+        # acceptable; the buffer + resume path recovers the turn.
+        DB_FLUSH_EVENTS = 20
+        DB_FLUSH_SECONDS = 0.25
+        db_batch: list[dict] = []
+        last_flush = time.monotonic()
+
+        def _flush_batch_sync() -> None:
+            nonlocal assistant_message_id, next_seq
+            if not db_batch:
+                return
+            if assistant_message_id is None:
+                assistant_message_id = conversation_service.begin_assistant_turn(
+                    conv_id, harness=harness_id,
+                ).id
+            conversation_service.append_events_batch(
+                assistant_message_id, next_seq, db_batch,
+            )
+            next_seq += len(db_batch)
+            db_batch.clear()
+
+        turn_started = time.monotonic()
+        first_event_at: float | None = None
         event_count = 0
         try:
             async for sse_string in self.harness.formatter(stream, model, event_sink):
                 event_count += 1
+                if event_count == 1:
+                    first_event_at = time.monotonic()
+                    logger.info("[turn-timing] first event %.2fs after producer start", first_event_at - turn_started)
                 if event_count <= 3 or "response.completed" in sse_string:
                     logger.info("[responses] SSE event #%d (first 120 chars): %s", event_count, sse_string[:120].replace('\n', '\\n'))
                 # Inject conversation_id and harness into the response.created
@@ -218,41 +257,60 @@ class ResponsesHandler:
                         lines = sse_string.strip().split("\n")
                         data_line = next(l for l in lines if l.startswith("data:"))
                         payload = json.loads(data_line[5:])
-                        payload["conversation_id"] = str(conversation_id)
+                        payload["conversation_id"] = str(conv_id)
                         if harness_id:
                             payload["harness"] = harness_id
                         sse_string = f"event: response.created\ndata: {json.dumps(payload)}\n\n"
                     except Exception:
                         pass
-                # Write-ahead: durably commit every event the formatter
-                # recorded for this SSE string BEFORE it reaches the client.
-                # A disconnect mid-turn can then only lose bytes on the
-                # wire — never recorded progress — so the tail/items replay
-                # from message_events is always complete. The assistant row
-                # is created lazily on the first event so an eventless turn
-                # still leaves no row (matches save_assistant_turn).
                 if pending_events:
-                    if assistant_message_id is None:
-                        assistant_message_id = conversation_service.begin_assistant_turn(
-                            conversation_id, harness=harness_id,
-                        ).id
-                    for event_data in pending_events:
-                        conversation_service.append_event(
-                            assistant_message_id, next_seq, event_data,
-                        )
-                        next_seq += 1
+                    db_batch.extend(pending_events)
                     pending_events.clear()
+                if db_batch and (
+                    len(db_batch) >= DB_FLUSH_EVENTS
+                    or time.monotonic() - last_flush >= DB_FLUSH_SECONDS
+                ):
+                    await asyncio.to_thread(_flush_batch_sync)
+                    last_flush = time.monotonic()
                 yield sse_string
 
-            logger.info("[responses] stream finished — %d events, %d chars of text", event_count, len("".join(collected_text)))
+            logger.info(
+                "[responses] stream finished — %d events, %d chars of text, %.2fs total",
+                event_count, len("".join(collected_text)), time.monotonic() - turn_started,
+            )
         finally:
             # Runs on normal completion AND when the client disconnects or
             # cancels (GeneratorExit/CancelledError at the yield above).
-            # Events are already durable; stamp the text collected so far.
+            # Flush synchronously here — awaiting a worker thread inside a
+            # closing async generator can be skipped under cancellation,
+            # and the turn is over so blocking briefly is fine.
+            db_batch.extend(pending_events)
+            pending_events.clear()
+            try:
+                _flush_batch_sync()
+            except Exception:
+                logger.exception("[responses] final event flush failed")
             if assistant_message_id is not None:
                 conversation_service.finalize_assistant_turn(
                     assistant_message_id, "".join(collected_text),
                 )
+
+    async def _run_produce(self, **kwargs) -> None:
+        buffer = kwargs.get("buffer")
+        try:
+            async for sse_string in self._produce(**kwargs):
+                if buffer:
+                    await buffer.append("message", {"sse": sse_string})
+            if buffer:
+                await buffer.close("completed")
+        except asyncio.CancelledError:
+            if buffer:
+                await buffer.close("cancelled")
+            raise
+        except Exception as e:
+            if buffer:
+                await buffer.close("error", {"error": str(e)})
+            logger.exception("[responses] producer failed")
 
     async def _collect(
         self,

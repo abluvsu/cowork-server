@@ -1,9 +1,15 @@
+import os
 from pathlib import Path
+
+import pytest
 
 from cowork.harnesses.hermes_harness.memory_adapter import HermesMemoryAdapter
 from cowork.harnesses.memory.adapter import get_memory_adapter
 from cowork.harnesses.memory.registry import MemorySlot
 from cowork.harnesses.memory.runtime import ensure_all_layouts
+
+
+_symlinks_available = os.name != "nt"
 
 
 def test_get_memory_adapter_returns_registered_hermes():
@@ -30,6 +36,7 @@ def test_build_prompt_context_includes_rules(tmp_path, monkeypatch):
     assert "Always be concise" in context
 
 
+@pytest.mark.skipif(not _symlinks_available, reason="requires symlink support (Developer Mode on Windows)")
 def test_ensure_all_layouts_creates_symlinks(tmp_path, monkeypatch):
     memory_root = tmp_path / "memory"
     hermes_memories = tmp_path / "hermes" / "memories"

@@ -22,6 +22,8 @@ conversation UUID.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -29,7 +31,8 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from cowork.common.logger import get_logger
-from cowork.harnesses.base import FileInputBlock, MemoryScope, TextInputBlock
+from cowork.harnesses.base import FileInputBlock, TextInputBlock
+from cowork.schemas.memory import MemoryScope
 from cowork.harnesses.cli_agents.config import CliConfig
 from cowork.harnesses.cli_agents.events import ConversationRequest, NormalizedEvent
 from cowork.harnesses.hermes_harness.stream_formatter import format_hermes_stream
@@ -40,6 +43,66 @@ from cowork.models.skill import Skill
 logger = get_logger(__name__)
 
 TURN_TIMEOUT_SECONDS = 900
+
+# Where per-invocation MCP config files are written. The app profile dir
+# (~/.cowork), NOT the project working directory — these files can embed
+# server env vars (API keys/tokens for the MCP server itself), so they
+# must not land inside a user's project folder where they could be
+# committed or synced.
+_MCP_CONFIG_DIR = Path.home() / ".cowork" / "mcp-run"
+
+
+def _enabled_mcp_servers() -> list[dict]:
+    """Enabled servers from Settings → MCP servers (mcp_servers_json),
+    reshaped to the `{command, args, env}` triple CLIs expect. Defensive
+    like every other *_json settings field in this codebase — malformed
+    entries are skipped rather than failing the whole turn.
+    """
+    from cowork.common.settings.user_settings import get_user_settings
+
+    try:
+        raw = json.loads(get_user_settings().mcp_servers_json or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(raw, list):
+        return []
+
+    servers = []
+    for entry in raw:
+        if not isinstance(entry, dict) or not entry.get("enabled", True):
+            continue
+        server_id = entry.get("id")
+        command = entry.get("command")
+        if not server_id or not command:
+            continue
+        servers.append({
+            "id": str(server_id),
+            "command": str(command),
+            "args": [str(a) for a in (entry.get("args") or [])],
+            "env": {str(k): str(v) for k, v in (entry.get("env") or {}).items()},
+        })
+    return servers
+
+
+def _write_mcp_config_file(servers: list[dict]) -> Path:
+    """Write the `{"mcpServers": {...}}` file Claude Code's --mcp-config
+    (and compatible CLIs) expect. Filename is content-hashed so identical
+    server sets across turns reuse the same file instead of accumulating
+    one file per turn, while a server-set change gets its own file
+    (no risk of a stale in-flight turn reading a file another turn just
+    overwrote).
+    """
+    mcp_servers = {
+        s["id"]: {"command": s["command"], "args": s["args"], "env": s["env"]}
+        for s in servers
+    }
+    payload = json.dumps({"mcpServers": mcp_servers}, sort_keys=True)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    _MCP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    path = _MCP_CONFIG_DIR / f"{digest}.json"
+    if not path.exists():
+        path.write_text(payload, encoding="utf-8")
+    return path
 
 
 class BaseCliHarness:
@@ -185,7 +248,24 @@ class BaseCliHarness:
             args += [cfg.model_flag, model]
         if cfg.skip_permissions_flag and request.profile.get("skipPermissions", True):
             args.append(cfg.skip_permissions_flag)
-        return [*args, *cfg.default_args]
+        mcp_args = self._build_mcp_arguments()
+        return [*args, *cfg.default_args, *mcp_args]
+
+    def _build_mcp_arguments(self) -> list[str]:
+        """Inject enabled MCP servers (Settings → MCP) into this turn, for
+        CLIs that take a per-invocation JSON config file (config.mcp_config_flag).
+        No-op when the CLI doesn't support that (declared via
+        mcp_config_flag=None — e.g. Codex reads MCP servers from its own
+        config.toml, not per-invocation) or no servers are enabled.
+        """
+        cfg = self.config
+        if not cfg.supports_mcp or not cfg.mcp_config_flag:
+            return []
+        servers = _enabled_mcp_servers()
+        if not servers:
+            return []
+        path = _write_mcp_config_file(servers)
+        return [cfg.mcp_config_flag, str(path)]
 
     def parse_line(self, line: str) -> NormalizedEvent | None:
         """Required override: one line of the CLI's stdout -> NormalizedEvent,
@@ -302,7 +382,17 @@ class BaseCliHarness:
         # re-resolve itself/its helpers when it spawns children.
         env["PATH"] = self.search_path()
 
-        Path(request.cwd).mkdir(parents=True, exist_ok=True)
+        cwd = Path(request.cwd)
+        cwd.mkdir(parents=True, exist_ok=True)
+        # Per-project persistent memory: CLAUDE.md in the project folder is
+        # auto-read by Claude Code (and compatible CLIs) every turn. Ensure
+        # it exists here too — projects created before the scaffold landed
+        # (e.g. 'general') get it lazily on their next turn. Idempotent.
+        from cowork.services.projects import ProjectService
+        try:
+            ProjectService.scaffold_memory(cwd, cwd.name)
+        except OSError as exc:
+            logger.warning("could not scaffold project memory in %s: %s", cwd, exc)
 
         args = [*self.spawn_argv(cli), *self.build_arguments(request, resume=resume)]
         proc = subprocess.Popen(

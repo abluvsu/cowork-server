@@ -27,6 +27,29 @@ _MESSAGE_ORDER = (
 EMPTY_TURN_PLACEHOLDER = "[No response was produced for this turn.]"
 
 
+def _recover_text_from_events(events) -> str:
+    """Reconstruct a turn's real text from its persisted SSE events.
+
+    Prefers `response.completed`'s authoritative full text (the whole
+    answer in one field); falls back to joining `response.output_text.delta`
+    chunks for a turn that streamed text but never reached a completed
+    frame (killed mid-stream).
+    """
+    deltas: list[str] = []
+    for event_data in events:
+        event_type = event_data.get("type")
+        if event_type == "response.completed":
+            try:
+                text = event_data["response"]["output"][0]["content"][0]["text"]
+            except (KeyError, IndexError, TypeError):
+                text = ""
+            if text:
+                return text
+        elif event_type == "response.output_text.delta":
+            deltas.append(event_data.get("delta", ""))
+    return "".join(deltas)
+
+
 class ConversationService:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -248,6 +271,29 @@ class ConversationService:
         ))
         self.session.commit()
 
+    def append_events_batch(
+        self,
+        message_id: UUID,
+        start_sequence_number: int,
+        events: list[dict],
+    ) -> None:
+        """Persist a contiguous run of streaming events in ONE commit.
+
+        The streaming producer batches events (~20 events / 250ms) instead
+        of committing per event — per-event commits made every token delta
+        pay a full SQLite fsync, which visibly stalled streaming on slow
+        disks. Sequence numbers are assigned contiguously from
+        `start_sequence_number`, preserving the gapless replay contract of
+        get_turn_events.
+        """
+        for offset, event_data in enumerate(events):
+            self.session.add(MessageEvent(
+                message_id=message_id,
+                sequence_number=start_sequence_number + offset,
+                event_data=event_data,
+            ))
+        self.session.commit()
+
     def finalize_assistant_turn(self, message_id: UUID, text: str) -> None:
         """Stamp the assistant text once the stream ends (or is cut)."""
         message = self.session.get(Message, message_id)
@@ -256,6 +302,45 @@ class ConversationService:
         message.content = text or EMPTY_TURN_PLACEHOLDER
         self.session.add(message)
         self.session.commit()
+
+    def reconcile_stale_placeholders(self) -> int:
+        """Backfill assistant rows stuck on EMPTY_TURN_PLACEHOLDER whose
+        streamed events actually contain real text.
+
+        begin_assistant_turn() writes the placeholder up front (write-ahead)
+        and finalize_assistant_turn() overwrites it once the turn ends — but
+        that overwrite is an in-process call. If the server is killed or
+        restarted mid-turn (observed 2026-07-15, conversation 648e26c9:
+        real `response.output_text.delta` events were persisted, then the
+        process died before finalize ran), the placeholder is never
+        replaced even though the real answer is sitting in message_events.
+        The existing boot recovery (seal_orphan_buffers) only patches the
+        JSONL replay buffer, not this DB row — this is the DB-side half.
+        Call at boot, alongside seal_orphan_buffers. Idempotent; returns
+        the count repaired.
+        """
+        # Content is a JSON column — filtering it with `==` in SQL compares
+        # serialized JSON text against a raw Python string and never
+        # matches (SQLite stores it quoted). Filter in Python instead.
+        candidates = self.session.exec(
+            select(Message).where(Message.role == Role.assistant)
+        ).all()
+        stale = [m for m in candidates if m.content == EMPTY_TURN_PLACEHOLDER]
+        repaired = 0
+        for message in stale:
+            events = self.session.exec(
+                select(MessageEvent)
+                .where(MessageEvent.message_id == message.id)
+                .order_by(MessageEvent.sequence_number)
+            ).all()
+            text = _recover_text_from_events(e.event_data for e in events)
+            if text:
+                message.content = text
+                self.session.add(message)
+                repaired += 1
+        if repaired:
+            self.session.commit()
+        return repaired
 
     def latest_assistant_message(self, conversation_id: UUID) -> Message | None:
         """Newest assistant turn of a conversation — the turn

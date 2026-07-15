@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 from cowork.harnesses.base import register
-from cowork.harnesses.cli_agents.base import BaseCliHarness
+from cowork.harnesses.cli_agents.base import BaseCliHarness, _enabled_mcp_servers
 from cowork.harnesses.cli_agents.config import CliConfig
 from cowork.harnesses.cli_agents.events import ConversationRequest, NormalizedEvent
 
@@ -24,6 +24,7 @@ CLAUDE_CONFIG = CliConfig(
     supports_resume=True,
     supports_images=False,  # pass file paths in the prompt instead
     supports_mcp=True,
+    mcp_config_flag="--mcp-config",
 )
 
 
@@ -88,6 +89,18 @@ class ClaudeCodeHarness(BaseCliHarness):
         # decision (grill-me, 2026-07-03) rather than hanging on a
         # prompt no terminal exists to answer.
         args += ["--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"]
+        # acceptEdits only covers file edits — MCP tool calls (mcp__<id>__*)
+        # still hit the interactive permission system, and there's no TTY
+        # here to answer the prompt, so without this every MCP call is
+        # silently denied (grill-me, 2026-07-11: personal single-user app,
+        # consent already happened when the user enabled the server in
+        # Settings -> MCP Servers, so a second CLI-level prompt is dead
+        # weight, not a safety backstop). Scoped per-server, not blanket
+        # bypassPermissions, so Bash/other tools still prompt normally.
+        mcp_servers = _enabled_mcp_servers()
+        if mcp_servers:
+            patterns = [f"mcp__{s['id']}__*" for s in mcp_servers]
+            args += ["--allowedTools", ",".join(patterns)]
         return args
 
     def env_removals(self) -> list[str]:

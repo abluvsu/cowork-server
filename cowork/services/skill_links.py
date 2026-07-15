@@ -34,21 +34,36 @@ def _project_dirs() -> list[Path]:
 
 
 def _ensure_symlink(link: Path, target: Path) -> None:
-    if link.is_symlink():
+    if link.is_symlink() or (hasattr(link, "is_junction") and link.is_junction()):
         if link.resolve() == target.resolve():
             return
         link.unlink()
     elif link.exists():
-        raise RuntimeError(f"{link} exists and is not a symlink; refusing to replace it.")
+        import shutil
+        if link.is_dir():
+            shutil.rmtree(link)
+        else:
+            link.unlink()
     link.parent.mkdir(parents=True, exist_ok=True)
-    link.symlink_to(target, target_is_directory=True)
-
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        import sys
+        import subprocess
+        if sys.platform == "win32":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True)
+        else:
+            raise
 
 def _remove_link(link: Path) -> None:
-    if link.is_symlink():
+    if link.is_symlink() or (hasattr(link, "is_junction") and link.is_junction()):
         link.unlink()
     elif link.exists():
-        raise RuntimeError(f"{link} exists and is not a symlink; refusing to remove it.")
+        import shutil
+        if link.is_dir():
+            shutil.rmtree(link)
+        else:
+            link.unlink()
 
 
 def reconcile_skill_links(skill: Skill) -> None:

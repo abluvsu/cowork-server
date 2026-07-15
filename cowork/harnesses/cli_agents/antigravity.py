@@ -10,9 +10,19 @@ CLI-level limitation confirmed by direct testing (30s and 90s timeouts,
 both mechanisms), not a harness bug. Every turn starts fresh rather than
 risk a multi-minute hang. Revisit if a future agy release fixes headless
 resume.
+
+--print-timeout 14m: agy's own default is 5m, and it reconnects to its
+backend on a cold start (idle overnight, first call after boot) — the
+same reconnect that makes `agy models` need a retry in check_status/
+available_models below. Reproduced live: a plain "say hello" took 53s
+cold, and a real turn hit agy's own "Error: timeout waiting for
+response" at the 5m mark. 14m keeps agy's deadline just under our own
+900s (15m) TURN_TIMEOUT_SECONDS, so agy's own clearer message fires
+first instead of racing our generic "turn timed out" one.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 
@@ -28,6 +38,7 @@ AGY_CONFIG = CliConfig(
     resume_flag=None,
     session_flag=None,
     skip_permissions_flag="--dangerously-skip-permissions",
+    default_args=("--print-timeout", "14m"),
     supports_resume=False,
     supports_images=False,
     supports_mcp=False,
@@ -116,3 +127,11 @@ class AntigravityHarness(BaseCliHarness):
             if base["loggedIn"] else "Not responding as expected — run `agy` directly to check login."
         )
         return base
+
+
+# wired by Plan A when base.py gains an error-mapping hook
+def friendly_error(stderr_tail: str) -> str | None:
+    match = re.search(r"Individual quota reached.*Resets in ([0-9hms]+)", stderr_tail, re.DOTALL)
+    if match:
+        return f"Antigravity quota exhausted — resets in {match.group(1)}."
+    return None

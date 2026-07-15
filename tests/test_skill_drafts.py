@@ -8,6 +8,8 @@ into a draft (the auto-save backstop).
 import os
 from pathlib import Path
 
+import pytest
+
 from cowork.services.task_objects import (
     finalize_turn_skill_drafts,
     snapshot_skill_drafts,
@@ -88,6 +90,10 @@ def test_stray_auto_saved_skill_is_relocated_into_a_draft(tmp_path: Path):
     assert not (drafts / "competitive-analysis").exists()
 
 
+_symlinks_available = os.name != "nt"
+
+
+@pytest.mark.skipif(not _symlinks_available, reason="requires symlink support (Developer Mode on Windows)")
 def test_symlinked_skill_is_not_a_stray(tmp_path: Path):
     project = _project(tmp_path)
     canonical = tmp_path / "canonical" / "enabled-skill"

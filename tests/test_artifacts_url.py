@@ -18,14 +18,16 @@ from cowork.services.artifacts import serve_url_for
 def _get_artifacts_prefix() -> str:
     """Derive the full URL prefix for artifact serving from the router.
 
-    FastAPI flattens sub-router paths when they're included, so
-    route.path already contains the full prefix (e.g.
-    "/api/v1/artifacts/serve/{project_name}/{file_path:path}").
+    _IncludedRouter.url_path_for() reconstructs the full path including
+    the mount prefix. We use it to extract the /serve/ prefix.
     """
+    from cowork.api.v1.endpoints.artifacts import router as artifacts_router
+
     for route in api_router.routes:
-        if hasattr(route, "path") and "/serve/" in route.path:
-            serve_idx = route.path.index("/serve/")
-            return route.path[: serve_idx + len("/serve/")]
+        if getattr(route, "original_router", None) is artifacts_router:
+            full = route.url_path_for("serve_artifact_file", project_name="x", file_path="y")
+            serve_idx = full.index("/serve/")
+            return full[: serve_idx + len("/serve/")]
     raise AssertionError("No /serve/ route found on api_router")
 
 

@@ -1,6 +1,6 @@
 """Database connection and session management using SQLAlchemy"""
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session as SQLModelSession
 
@@ -23,6 +23,21 @@ def _create_engine(db_uri: str):
                 db_uri,
                 connect_args={"check_same_thread": False},
             )
+
+            # WAL lets readers proceed during writes and replaces the
+            # per-commit journal-file create/fsync/delete of the default
+            # rollback mode — critical because streaming persists events
+            # continuously during a turn. synchronous=NORMAL is safe with
+            # WAL (durable except power loss); busy_timeout stops
+            # concurrent writers from failing fast with "database is
+            # locked" instead of briefly waiting.
+            @event.listens_for(engine, "connect")
+            def _set_sqlite_pragmas(dbapi_conn, _record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.close()
         else:
             engine = create_engine(
                 db_uri,

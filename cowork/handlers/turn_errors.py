@@ -1,8 +1,5 @@
 """User-facing turn-failure mapping.
 
-Ported from the bundled server (mindsdb/cowork PR #156), which is being
-retired in favour of this package.
-
 A turn can die on a cryptic provider 400 — most notably an image that
 reaches an Anthropic-backed model as an OpenAI-style ``image_url``
 content block instead of Anthropic's ``image`` block. The raw provider
@@ -42,12 +39,12 @@ TOKEN_LIMIT_CODE = "token_limit"
 # Curated copy for a provider auth failure — the credential the model gateway
 # sees is invalid (revoked / rotated / never provisioned / org drift), so calls
 # come back 401 mid-conversation. The desktop renders a richer card for the
-# `provider_auth` code (Reconnect MindsHub / Open Settings); this is the fallback
-# text. Distinct from token_limit (out of credits) and from the config-absence
-# case (no provider configured at all).
+# `provider_auth` code (Open Settings); this is the fallback text. Distinct
+# from token_limit (out of credits) and from the config-absence case (no
+# provider configured at all).
 AUTH_ERROR_USER_MESSAGE = (
-    "Your MindsHub session is no longer valid — reconnect to keep going, or "
-    "update your provider key in Settings."
+    "Your provider credentials are no longer valid — update your provider "
+    "key or gateway URL in Settings."
 )
 
 # Wire-level code for the auth case. The renderer branches on it to offer a
@@ -133,12 +130,12 @@ def is_auth_error(exc: Exception) -> bool:
 def auth_error_detail(provider_label: str, reconnectable: bool) -> str:
     """Provider-aware copy for an auth failure.
 
-    MindsHub (managed) → the fix is to re-provision the key in place
-    ("reconnect"); a BYOK provider → the user must fix their own key in Settings,
-    so do NOT tell them to reconnect MindsHub.
+    A reconnectable (managed/gateway) provider → the fix is to re-provision
+    the credential in place ("reconnect"); a BYOK provider → the user must
+    fix their own key in Settings.
     """
     if reconnectable:
-        return "Your MindsHub session is no longer valid — reconnect to keep going."
+        return "Your provider session is no longer valid — reconnect to keep going."
     return f"Your {provider_label} API key is no longer valid — update it in Settings."
 
 
@@ -168,9 +165,9 @@ def response_failed_payload(
     """Wire payload for a ``response.failed`` event (SSE + DB sidecar).
 
     ``reconnectable`` / ``provider_label`` are included only for the
-    ``provider_auth`` case so the renderer can offer "Reconnect" (MindsHub) vs
-    "Open Settings" (BYOK) — omitted otherwise to keep the shape unchanged for
-    every other failure.
+    ``provider_auth`` case so the renderer can offer "Reconnect" (managed
+    gateway) vs "Open Settings" (BYOK) — omitted otherwise to keep the shape
+    unchanged for every other failure.
     """
     payload = {"type": "response.failed", "code": code, "error": error}
     if reconnectable is not None:

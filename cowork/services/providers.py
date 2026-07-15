@@ -95,8 +95,9 @@ async def ping_provider(p: dict[str, Any]) -> tuple[str, str]:
 
         This is the only route guaranteed to behave the same as a real
         task: `/models` and other listing endpoints are not deployed on
-        every MindsHub host (they 404/401 even for valid keys), which
-        produced false negatives even though chat completions worked.
+        every OpenAI-compatible gateway (they 404/401 even for valid
+        keys), which produced false negatives even though chat
+        completions worked.
         A 401/403 still means a rejected key; any other non-2xx is a
         genuine failure surfaced with its HTTP code.
 
@@ -353,48 +354,48 @@ def _build_legacy_llm_client(settings):
     from anton.core.llm.anthropic import AnthropicProvider
     from anton.core.llm.openai import OpenAIProvider
 
-    from cowork.common.settings.user_settings import Provider
+    from cowork.common.settings.user_settings import Provider, provider_api_key
 
-    def _make_provider(role: Provider):
+    def _make_provider(role: Provider, effort: str | None = None):
+        effort_kw = {"reasoning_effort": effort} if effort else {}
+        
+        base = None
+        if role == Provider.GEMINI:
+            base = "https://generativelanguage.googleapis.com/v1beta/openai/"
+        elif role == Provider.OPENAI_COMPATIBLE:
+            base = settings.openai_base_url or ""
+            
+        key = provider_api_key(settings, role)
+        
         if role in (Provider.OPENAI_COMPATIBLE, Provider.GEMINI):
             if key is None:
                 raise ValueError(f"{role.label} API key is not configured")
-            # No base for openai-compatible → OpenAIProvider would silently
-            # default to api.openai.com and leak the BYO key to OpenAI. Fail
-            # loudly instead (config_status surfaces this as "Set a base URL",
-            # but callers don't all gate on config_ready, so enforce it here at
-            # the build site too). gemini always has a base (Google), so this
-            # only guards openai-compatible.
             if role == Provider.OPENAI_COMPATIBLE and not base:
                 raise ValueError("OpenAI-compatible base URL is not configured")
             return OpenAIProvider(
                 api_key=key.get_secret_value(), base_url=base, **effort_kw
             )
+            
         provider_map = {"anthropic": AnthropicProvider, "openai": OpenAIProvider}
         cls = provider_map.get(role.value)
         if cls is None:
             raise ValueError(f"Unknown provider: {role.value}")
         if key is None:
             raise ValueError(f"{role.label} API key is not configured")
-        # base is None for anthropic/openai → SDK default host (OpenAIProvider
-        # accepts base_url=None; AnthropicProvider takes no base_url kwarg).
+            
         if cls is OpenAIProvider:
             return cls(api_key=key.get_secret_value(), base_url=base, **effort_kw)
         return cls(api_key=key.get_secret_value(), **effort_kw)
 
-    # Use the *resolved* provider/model (not the raw stored fields) so a
-    # configured key takes effect even when planning_provider still points at
-    # a keyless provider — the same resolution config_status reports, so the
-    # readiness gate never claims "ready" for a client that would then throw.
     return LLMClient(
         planning_provider=_make_provider(
-            settings.resolved_planning_provider, settings.planning_reasoning_effort
+            settings.planning_provider, settings.planning_reasoning_effort
         ),
-        planning_model=settings.resolved_planning_model,
+        planning_model=settings.planning_model,
         coding_provider=_make_provider(
-            settings.resolved_coding_provider, settings.coding_reasoning_effort
+            settings.coding_provider, settings.coding_reasoning_effort
         ),
-        coding_model=settings.resolved_coding_model,
+        coding_model=settings.coding_model,
     )
 
 

@@ -10,6 +10,15 @@ Popen would fail with WinError 193).
 supports_resume=False until resume behavior can be verified (codex has
 `codex exec resume`; enabling it untested risks the same silent-hang
 failure mode Antigravity's resume showed).
+
+MCP: supports_mcp=True describes Codex's general capability (it does
+support MCP), but mcp_config_flag is left None — Codex has no per-
+invocation `--mcp-config <path>` flag like Claude Code. It reads MCP
+servers from ~/.codex/config.toml (or a project-scoped .codex/config.toml
+for trusted projects) and only takes ad-hoc `-c key=value` TOML overrides
+per run, via `codex mcp add`. Wiring cowork's Settings → MCP servers into
+that requires mutating a file we don't fully own; deferred until that's
+verified end-to-end rather than guessed at.
 """
 from __future__ import annotations
 

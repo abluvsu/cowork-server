@@ -100,7 +100,7 @@ def _resolved_model(
       - provider NOT switched → keep the user's chosen model.
       - provider switched → use the resolved provider's canonical default.
         NEVER fall back to the original provider's model — that would hand e.g.
-        a Claude id to an openai-compatible / MindsHub endpoint (misrouting).
+        a Claude id to an openai-compatible endpoint (misrouting).
       - resolved provider has no canonical default (openai-compatible) → None,
         so config_status's model gate reports "select a model" rather than
         silently running a wrong model.
@@ -302,7 +302,7 @@ class UserSettings(Settings):
     publish_url: str = Field(
         default="",
         title="Publish URL",
-        description="Base URL for publishing artifacts. When empty, derived from the MindsHub endpoint (api[.env].mindshub.ai → view[.env].mindshub.ai, else prod); set explicitly to override.",
+        description="Base URL for publishing artifacts. Empty disables publishing; set explicitly to point at a self-hosted viewer.",
     )
     openai_base_url: str = Field(
         default="",
@@ -334,6 +334,17 @@ class UserSettings(Settings):
         title="Provider Status Details",
         description="JSON-encoded map of provider type → last connectivity-test detail (e.g. an HTTP code).",
     )
+    mcp_servers_json: str = Field(
+        default="[]",
+        title="MCP Servers",
+        description=(
+            "JSON-encoded list of MCP server configs available to CLI coworkers that "
+            "support MCP (Claude Code, Codex). Each entry: "
+            "{id, label, enabled, command, args, env}. The backend is the source of "
+            "truth — the Electron MCP settings UI reads/writes through this key "
+            "instead of a local file."
+        ),
+    )
 
     @field_validator("harness")
     @classmethod
@@ -353,19 +364,20 @@ class UserSettings(Settings):
         return self
 
     @model_validator(mode='before')
-    def migrate_minds_cloud(cls, data: Any) -> Any:
+    def migrate_legacy_providers(cls, data: Any) -> Any:
+        """Coerce the specific removed 'minds_cloud' provider (old installs
+        that had the since-removed MindsHub integration configured) to
+        anthropic, so a stale DB row can't crash settings loading.
+
+        Deliberately narrow — only the one known-legacy value is rewritten.
+        Any other unrecognized value still fails normal enum validation
+        (e.g. a malformed raw-settings write should still 400, not be
+        silently coerced)."""
         if isinstance(data, dict):
-            if data.get('planning_provider') == 'minds_cloud':
-                data['planning_provider'] = 'anthropic'
-            if data.get('coding_provider') == 'minds_cloud':
-                data['coding_provider'] = 'anthropic'
+            for field in ('planning_provider', 'coding_provider'):
+                if data.get(field) == 'minds_cloud':
+                    data[field] = 'anthropic'
         return data
-    def apply_model_defaults(self) -> 'UserSettings':
-        if self.planning_model is None:
-            self.planning_model = PLANNING_MODEL_DEFAULTS.get(self.planning_provider.value)
-        if self.coding_model is None:
-            self.coding_model = CODING_MODEL_DEFAULTS.get(self.coding_provider.value)
-        return self
 
     @property
     def config_status(self) -> dict[str, Any]:

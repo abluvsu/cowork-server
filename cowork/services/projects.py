@@ -41,6 +41,40 @@ class ProjectService:
         anton_dir.mkdir(parents=True, exist_ok=True)
         (anton_dir / "anton.md").touch()
 
+    @staticmethod
+    def scaffold_memory(target: Path, name: str) -> None:
+        """Per-project persistent memory for CLI coworkers.
+
+        Claude Code (and compatible CLIs) auto-read CLAUDE.md from their
+        cwd every turn — and conversations run with the project folder as
+        cwd — so this one file IS the project's long-lived memory, with
+        no prompt plumbing needed. --permission-mode acceptEdits already
+        lets the agent update it in place. Idempotent: never overwrites.
+        """
+        memory = target / "CLAUDE.md"
+        if memory.exists():
+            return
+        memory.write_text(
+            f"# Project: {name}\n"
+            "\n"
+            "This file is this project's persistent memory. It is loaded at the\n"
+            "start of every conversation in this project.\n"
+            "\n"
+            "Maintain it: when you learn a durable fact about this project — a\n"
+            "goal, a decision, a constraint, a person, a recurring task — record\n"
+            "it here (edit this file directly). Keep it curated: correct stale\n"
+            "facts instead of appending duplicates. Don't store secrets.\n"
+            "\n"
+            "## Goals\n"
+            "\n"
+            "(none recorded yet)\n"
+            "\n"
+            "## Facts & decisions\n"
+            "\n"
+            "(none recorded yet)\n",
+            encoding="utf-8",
+        )
+
     def _unique_name(self, base: str, *, exclude: str | None = None) -> str:
         existing = {
             p.name for p in self.session.exec(select(Project)).all()
@@ -92,6 +126,7 @@ class ProjectService:
         path = self._project_path(final_name)
         path.mkdir(parents=True)
         # self._scaffold(path)
+        self.scaffold_memory(path, final_name)
         project = Project(name=final_name, path=str(path), is_active=False)
         self.session.add(project)
         self.session.commit()

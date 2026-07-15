@@ -327,7 +327,7 @@ _REQUEST_CREDENTIALS_SCHEMA = {
         },
         "logo": {
             "type": "string",
-            "description": "Optional icon name from the app's palette — use one of: 'database', 'globe', 'cube', 'doc', 'code', 'image', 'folder', 'brain', 'sparkle', 'wifi', 'key', 'link', 'mindsdb'. URLs are NOT supported; pick the closest semantic match for the connector. Defaults to 'database' when omitted.",
+            "description": "Optional icon name from the app's palette — use one of: 'database', 'globe', 'cube', 'doc', 'code', 'image', 'folder', 'brain', 'sparkle', 'wifi', 'key', 'link'. URLs are NOT supported; pick the closest semantic match for the connector. Defaults to 'database' when omitted.",
         },
         "logo_color": {
             "type": "string",

@@ -24,8 +24,8 @@ def test_raw_settings_write_syncs_legacy_env_to_db(tmp_path, monkeypatch):
     env_path.write_text(
         "\n".join(
             [
-                "ANTON_MINDS_API_KEY=existing-key",
-                "ANTON_PLANNING_PROVIDER=openai-compatible",
+                "ANTON_OPENAI_API_KEY=existing-key",
+                "ANTON_PLANNING_PROVIDER=anthropic",
             ]
         )
         + "\n",
@@ -35,19 +35,19 @@ def test_raw_settings_write_syncs_legacy_env_to_db(tmp_path, monkeypatch):
 
     session = get_open_session()
     try:
-        _delete_settings(session, "minds_api_key", "planning_provider", "planning_model")
+        _delete_settings(session, "planning_provider", "planning_model")
 
         response = write_raw_settings(_RawSettingsBody(content="ANTON_PLANNING_MODEL=_reason_"), session)
 
         assert response == {"ok": True}
-        assert settings_endpoint.read_raw_settings()["ANTON_MINDS_API_KEY"] == "existing-key"
+        assert settings_endpoint.read_raw_settings()["ANTON_OPENAI_API_KEY"] == "existing-key"
 
         loaded = SettingService(session).load()
-        assert loaded.minds_api_key.get_secret_value() == "existing-key"
-        assert loaded.planning_provider.value == "minds_cloud"
+        assert loaded.openai_api_key.get_secret_value() == "existing-key"
+        assert loaded.planning_provider.value == "anthropic"
         assert loaded.planning_model == "_reason_"
     finally:
-        _delete_settings(session, "minds_api_key", "planning_provider", "planning_model")
+        _delete_settings(session, "planning_provider", "planning_model")
         session.close()
 
 

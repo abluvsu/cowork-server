@@ -205,7 +205,7 @@ class SettingService:
         # into a fresh session.
         credential_keys += [
             "openai_base_url",
-            "minds_url",
+            "minds_url",  # legacy row from removed MindsHub integration — deleted on logout so old DBs self-clean
             "providers_json",
             "provider_status",
             "provider_status_details",

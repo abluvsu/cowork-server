@@ -13,7 +13,7 @@ of readers (the live SSE response, a reconnecting client, a dev running
 Backends:
   - ``FileStreamBuffer`` — JSONL file per turn. Used for desktop and the
     current single-instance cloud container. Ported from the proven
-    bundled-server implementation (mindsdb/cowork `turn_buffer.py`).
+    original bundled-server turn_buffer implementation.
   - ``RedisStreamBuffer`` — WIP. Backed by a Redis Stream so any web
     replica can tail a run executed by a separate worker. Wired when we
     move to multi-instance cloud (see class docstring). The interface is
@@ -119,21 +119,31 @@ def read_records(path: Path, from_seq: int = 0) -> Iterator[TurnRecord]:
 
 
 class FileStreamBuffer(StreamBuffer):
-    """JSONL file buffer with a renewable-event live tail.
+    """JSONL file buffer with an in-memory live tail.
+
+    Records are held in memory for the lifetime of the turn (producer and
+    readers share this process), so ``tail()`` never touches the disk —
+    the JSONL file exists purely for crash recovery and cross-boot replay
+    via ``read_records``. Disk writes are flushed at most every
+    ``_FLUSH_INTERVAL_S`` (plus on close), not per record: losing the last
+    fraction of a second on a hard crash is acceptable for a UI replay
+    log; the boot-time orphan sweep (recovery.py) handles the missing
+    terminal.
 
     The "many readers, one writer" signal: each append swaps in a fresh
     ``asyncio.Event`` and fires the old one, so a current waiter wakes
-    without racing a future waiter. Disk write + flush per record, no
-    fsync — losing the last few KB on a hard crash is acceptable for a UI
-    replay log; the boot-time orphan sweep (recovery.py) handles the
-    missing terminal.
+    without racing a future waiter.
     """
+
+    _FLUSH_INTERVAL_S = 0.25
 
     def __init__(self, path: Path) -> None:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._writer = self._path.open("a", encoding="utf-8")
         self._seq = 0
+        self._records: list[TurnRecord] = []
+        self._last_flush = 0.0
         self._new_data = asyncio.Event()
         self._done = asyncio.Event()
         self._closed = False
@@ -154,15 +164,20 @@ class FileStreamBuffer(StreamBuffer):
         if self._closed:
             logger.warning("Append to closed buffer %s ignored", self._path)
             return self._seq
-        record = {"seq": self._seq, "ts": now_iso(), "type": type_, "data": data}
+        ts = now_iso()
+        record = {"seq": self._seq, "ts": ts, "type": type_, "data": data}
         try:
             self._writer.write(json.dumps(record, ensure_ascii=False) + "\n")
-            self._writer.flush()
+            now = asyncio.get_event_loop().time()
+            if now - self._last_flush >= self._FLUSH_INTERVAL_S:
+                self._writer.flush()
+                self._last_flush = now
         except Exception:
             logger.exception("Failed to write turn record (path=%s)", self._path)
             return self._seq
         seq = self._seq
         self._seq += 1
+        self._records.append(TurnRecord(seq=seq, ts=ts, type=type_, data=data))
         old, self._new_data = self._new_data, asyncio.Event()
         old.set()
         return seq
@@ -172,6 +187,7 @@ class FileStreamBuffer(StreamBuffer):
             return
         await self.append(REASON_TO_TYPE.get(reason, "Done"), {"reason": reason, **(extra or {})})
         try:
+            self._writer.flush()
             self._writer.close()
         except Exception:
             pass
@@ -181,19 +197,22 @@ class FileStreamBuffer(StreamBuffer):
         old.set()
 
     async def tail(self, from_seq: int = 0) -> AsyncIterator[TurnRecord]:
-        seen = from_seq - 1
+        # Serve straight from the in-memory record list (seq == index).
+        # The previous implementation re-opened and re-scanned the JSONL
+        # file from the top on every wakeup — O(n²) over a long turn.
+        next_idx = max(from_seq, 0)
         while True:
             # Snapshot the event BEFORE reading so an append between the
             # read and the wait can't be lost (it either shows on re-read
             # or fires the snapshot we're about to await).
             waiter = self._new_data
-            emitted_terminal = False
-            for rec in read_records(self._path, from_seq=seen + 1):
-                seen = rec.seq
+            while next_idx < len(self._records):
+                rec = self._records[next_idx]
+                next_idx += 1
                 yield rec
                 if rec.is_terminal:
-                    emitted_terminal = True
-            if emitted_terminal or self._closed:
+                    return
+            if self._closed:
                 return
             done_waiter = asyncio.create_task(self._done.wait())
             data_waiter = asyncio.create_task(waiter.wait())

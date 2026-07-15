@@ -52,6 +52,30 @@ async def lifespan(app: FastAPI):
         gc_old_buffers(get_streams_dir(), max_age_days=7)
     except Exception:
         logger.exception("turn-buffer boot recovery failed (non-fatal)")
+    # DB-side half of the same crash recovery: seal_orphan_buffers above only
+    # patches the JSONL replay log, but a turn killed mid-stream can also
+    # leave its Message row stuck on the "no response" placeholder even
+    # though the real text was already persisted in message_events.
+    try:
+        from cowork.db.session import get_open_session
+        from cowork.services.conversations import ConversationService
+        with get_open_session() as _session:
+            repaired = ConversationService(_session).reconcile_stale_placeholders()
+            if repaired:
+                logger.info("Reconciled %d stale placeholder message(s) on boot.", repaired)
+    except Exception:
+        logger.exception("placeholder reconciliation failed (non-fatal)")
+    # Local daemons Anton/Hermes lean on (OmniRoute today). Adopt-if-healthy,
+    # else spawn detached — never blocks or fails startup on this; only the
+    # first turn that needs it is affected if it's unavailable. This backend
+    # supervisor is the source of truth so the Electron app gets it too, not
+    # just the dev-web fast path (frontend/scripts/start-omniroute.mjs).
+    try:
+        from cowork.services.local_services import get_registry
+        for service_id in get_registry().list_ids():
+            get_registry().ensure_started(service_id)
+    except Exception:
+        logger.exception("local-services startup failed (non-fatal)")
     start_scheduler()
     await app.state.channel_adapters.refresh_all()
     from cowork.channels.ingress import sync_channel_ingress

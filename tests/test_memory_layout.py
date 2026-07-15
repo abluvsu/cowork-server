@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,9 @@ from cowork.harnesses.memory.adapter import BaseMemoryAdapter
 from cowork.harnesses.memory.layout import MemoryLayout
 from cowork.harnesses.memory.registry import MemorySlot, SLOT_REGISTRY
 from cowork.harnesses.memory.store import SharedMemoryStore
+
+
+_symlinks_available = os.name != "nt"
 
 
 class _TestAdapter(BaseMemoryAdapter):
@@ -39,6 +43,7 @@ def test_ensure_canonical_files_is_idempotent(layout, memory_root):
     assert rules.read_text(encoding="utf-8") == "keep me\n"
 
 
+@pytest.mark.skipif(not _symlinks_available, reason="requires symlink support (Developer Mode on Windows)")
 def test_ensure_layout_creates_symlinks(layout, memory_root, tmp_path):
     link_dir = tmp_path / "hermes" / "memories"
     adapter = _TestAdapter()
@@ -74,6 +79,7 @@ def test_ensure_layout_skips_when_real_file_blocks_symlink(layout, tmp_path):
     assert user_file.read_text(encoding="utf-8") == "real file\n"
 
 
+@pytest.mark.skipif(not _symlinks_available, reason="requires symlink support (Developer Mode on Windows)")
 def test_symlink_round_trip_via_store(layout, memory_root, tmp_path):
     link_path = tmp_path / "hermes" / "memories" / "MEMORY.md"
     adapter = _TestAdapter()

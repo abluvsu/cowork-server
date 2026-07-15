@@ -106,6 +106,7 @@ async def test_oauth_launch_with_creds_success():
         auth_url="https://accounts.google.com/o/oauth2/v2/auth?test=1",
         redirect_uri="http://127.0.0.1:26866/api/v1/connectors/oauth/gmail/callback",
         started_at="2026-01-01T00:00:00Z",
+        state="test-state",
     )
 
     fake_state_data = {
@@ -148,6 +149,7 @@ async def test_oauth_launch_with_creds_error():
         auth_url="https://accounts.google.com/o/oauth2/v2/auth?test=1",
         redirect_uri="http://127.0.0.1:26866/api/v1/connectors/oauth/gmail/callback",
         started_at="2026-01-01T00:00:00Z",
+        state="test-state",
     )
 
     fake_state_data = {

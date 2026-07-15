@@ -59,19 +59,12 @@ def _resolve_coding(
         get_user_settings,
         provider_api_key_str,
     )
-    from cowork.services.providers import provider_base_url
 
     us = get_user_settings()
-    # Normalize to the dash form up front so every return value (and the lookups
-    # below) is consistent — anton's scratchpad_boot only understands the dash
-    # spellings; the snake form would silently fall through to AnthropicProvider.
     provider = (coding_provider or us.coding_provider.ui_value).replace("_", "-")
     model = coding_model or us.coding_model or ""
     enum_provider = UI_TYPE_TO_PROVIDER.get(provider)
 
-    # Resolve the API key from the correct dedicated slot (gemini/openai-
-    # compatible fall back to the shared openai key). An explicit coding_api_key
-    # always wins.
     if coding_api_key:
         api_key = coding_api_key
     elif enum_provider is not None:
@@ -79,14 +72,17 @@ def _resolve_coding(
     else:
         api_key = ""
 
-    # Derive the base URL deterministically per provider (see
-    # providers.provider_base_url): openai/gemini never inherit the shared
-    # openai_base_url slot, so a stale value left by another provider can't
-    # misroute this key. An explicit coding_base_url always wins. Empty string
-    # means "let anton's OpenAIProvider use its SDK default host".
-    base_url = coding_base_url or provider_base_url(
-        provider, openai_base_url=us.openai_base_url or "", minds_url=us.minds_url
-    ) or ""
+    # Derive the base URL per provider. Empty string means "SDK default host".
+    # openai/gemini never inherit the shared openai_base_url so a stale value
+    # left by another provider can't misroute this key.
+    _DEFAULT_BASE_URLS = {
+        "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    }
+    base_url = coding_base_url
+    if not base_url:
+        base_url = _DEFAULT_BASE_URLS.get(provider, "")
+    if not base_url and provider == "openai-compatible":
+        base_url = us.openai_base_url or ""
 
     # anton's scratchpad (scratchpad_boot.py) only understands "openai" /
     # "openai-compatible" → OpenAIProvider; every other string falls through to

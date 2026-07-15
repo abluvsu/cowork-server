@@ -21,6 +21,7 @@ from cowork.api.v1.endpoints import (
     responses,
     schedules,
     search,
+    services,
     settings,
     skills,
 )
@@ -76,6 +77,7 @@ api_router.include_router(settings.router, prefix="/settings", tags=["settings"]
 api_router.include_router(providers.router, prefix="/providers", tags=["providers"])
 api_router.include_router(harnesses.router, prefix="/harnesses", tags=["harnesses"])
 api_router.include_router(search.router, prefix="/search", tags=["search"])
+api_router.include_router(services.router, prefix="/services", tags=["services"])
 
 # ── Compat routes (SHIM:client-compat — delete this section) ────────
 api_router.include_router(integrations_router, prefix="/integrations", tags=["compat"])

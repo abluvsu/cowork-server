@@ -21,6 +21,7 @@ from cowork.db.session import get_session
 from cowork.handlers.responses import ResponsesHandler, sse_from_buffer
 from cowork.schemas.responses import ResponsesRequest
 from cowork.services.conversations import ConversationService
+from cowork.streaming import registry
 
 
 logger = setup_logging()

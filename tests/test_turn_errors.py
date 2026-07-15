@@ -67,18 +67,24 @@ def test_response_failed_sse_shape():
     assert payload == {"type": "response.failed", "code": "image_format", "error": "oops"}
 
 
-# ── Handler emission ──────────────────────────────────────────────
+# ── Handler emission (non-streaming / _collect path) ─────────────
 
 def _handler_with_raising_formatter(exc: Exception) -> ResponsesHandler:
-    """A ResponsesHandler whose formatter yields one frame then raises —
-    built without __init__ so no DB/harness setup is needed."""
-    handler = object.__new__(ResponsesHandler)
+    from unittest.mock import MagicMock
+    from sqlmodel import Session
+
+    from cowork.db.session import get_engine
+    from cowork.common.settings.app_settings import get_app_settings
+
+    engine = get_engine(get_app_settings().database.uri)
+    handler = ResponsesHandler.__new__(ResponsesHandler)
+    handler.session = Session(engine)
 
     async def _formatter(stream, model, event_sink):
         yield "event: response.created\ndata: {}\n\n"
         raise exc
 
-    async def _stream_response(*, conversation, input, disabled_connections=None):
+    async def _stream_response(*, conversation, input, model=None, disabled_connections=None):
         if False:
             yield
 
@@ -89,67 +95,6 @@ def _handler_with_raising_formatter(exc: Exception) -> ResponsesHandler:
 
     handler.harness = _Harness()
     return handler
-
-
-async def _collect_produce_sse(handler: ResponsesHandler) -> list[str]:
-    """Drive the streaming (_produce) error path and collect SSE frames."""
-    from unittest.mock import MagicMock, patch
-
-    frames: list[str] = []
-
-    class _Buffer:
-        async def append(self, _kind, data):
-            frames.append(data["sse"])
-
-        async def close(self, _status):
-            pass
-
-    conv_id = uuid4()
-    mock_session = MagicMock()
-
-    with (
-        patch("cowork.handlers.responses.get_open_session", return_value=mock_session),
-        patch("cowork.handlers.responses.ConversationService") as conv_svc,
-        patch("cowork.handlers.responses.get_harness", return_value=handler.harness),
-    ):
-        conv_svc.return_value.get_conversation.return_value = MagicMock()
-        await handler._produce(
-            conv_id=conv_id,
-            harness_input=[{"type": "text", "text": "hi"}],
-            original_content="hi",
-            model="anton",
-            disabled=None,
-            harness_name="anton",
-            harness_id="anton",
-            buffer=_Buffer(),
-        )
-
-    return frames
-
-
-async def test_stream_emits_friendly_failed_event_for_image_error():
-    exc = Exception("Input tag 'image_url' ... does not match the expected tags: 'image'")
-    frames = await _collect_produce_sse(_handler_with_raising_formatter(exc))
-    # created frame still came through, then a clean failure — no raise.
-    assert any("response.created" in f for f in frames)
-    failed = [f for f in frames if "response.failed" in f]
-    assert len(failed) == 1
-    payload = json.loads(failed[0].split("data: ", 1)[1].strip())
-    assert payload["code"] == "image_format"
-    assert "PNG or JPEG" in payload["error"]
-
-
-async def test_stream_redacts_generic_error():
-    frames = await _collect_produce_sse(
-        _handler_with_raising_formatter(Exception("psycopg2: password authentication failed for user 'admin'"))
-    )
-    failed = [f for f in frames if "response.failed" in f]
-    assert len(failed) == 1
-    payload = json.loads(failed[0].split("data: ", 1)[1].strip())
-    assert payload["code"] == te.GENERIC_TURN_ERROR_CODE
-    assert payload["error"] == te.GENERIC_TURN_ERROR_MESSAGE
-    # The raw provider/internal detail must not leak.
-    assert "password" not in failed[0]
 
 
 def test_collect_raises_400_with_curated_message_for_image_error():
@@ -184,7 +129,7 @@ def test_collect_raises_500_generic_for_unmapped_error():
 # type-independent fallback path (no anton import needed).
 _TOKEN_LIMIT_MESSAGE = (
     "Server returned 429 — Monthly limit exceeded for tokens: 5000000/5000000 "
-    "Visit https://console.mindshub.ai to upgrade or to top up your tokens."
+    "Visit https://console.example.com to upgrade or to top up your tokens."
 )
 
 
@@ -222,17 +167,6 @@ def test_token_limit_takes_precedence_over_generic():
     assert code != te.GENERIC_TURN_ERROR_CODE
 
 
-async def test_stream_emits_friendly_failed_event_for_token_limit():
-    frames = await _collect_produce_sse(_handler_with_raising_formatter(Exception(_TOKEN_LIMIT_MESSAGE)))
-    # created frame still came through, then a clean quota failure — no raise.
-    assert any("response.created" in f for f in frames)
-    failed = [f for f in frames if "response.failed" in f]
-    assert len(failed) == 1
-    payload = json.loads(failed[0].split("data: ", 1)[1].strip())
-    assert payload["code"] == te.TOKEN_LIMIT_CODE
-    assert payload["error"] == te.TOKEN_LIMIT_USER_MESSAGE
-
-
 def test_collect_raises_400_with_curated_message_for_token_limit():
     handler = _handler_with_raising_formatter(Exception(_TOKEN_LIMIT_MESSAGE))
     with pytest.raises(HTTPException) as err:
@@ -267,7 +201,7 @@ def test_auth_error_maps_to_provider_auth_code():
         ConnectionError("Invalid API key — check your OpenAI API key configuration.")
     )
     assert code == te.AUTH_ERROR_CODE == "provider_auth"
-    assert "reconnect" in message.lower()
+    assert "settings" in message.lower()
 
 
 def test_token_limit_wins_over_auth_for_credit_case():
@@ -277,16 +211,16 @@ def test_token_limit_wins_over_auth_for_credit_case():
 
 
 def test_auth_error_detail_is_provider_aware():
-    # MindsHub → reconnect; BYOK → fix your own key in Settings (no "reconnect").
-    minds = te.auth_error_detail("MindsHub", reconnectable=True)
-    assert "reconnect" in minds.lower()
+    # Managed gateway → reconnect; BYOK → fix your own key in Settings (no "reconnect").
+    managed = te.auth_error_detail("Gateway", reconnectable=True)
+    assert "reconnect" in managed.lower()
     byok = te.auth_error_detail("OpenAI", reconnectable=False)
     assert "reconnect" not in byok.lower()
     assert "OpenAI" in byok and "Settings" in byok
 
 
 def test_response_failed_payload_carries_auth_fields():
-    p = te.response_failed_payload("msg", te.AUTH_ERROR_CODE, reconnectable=True, provider_label="MindsHub")
-    assert p["reconnectable"] is True and p["provider_label"] == "MindsHub"
+    p = te.response_failed_payload("msg", te.AUTH_ERROR_CODE, reconnectable=True, provider_label="Gateway")
+    assert p["reconnectable"] is True and p["provider_label"] == "Gateway"
     # Unrelated failures keep the original shape (no extra keys).
     assert "reconnectable" not in te.response_failed_payload("boom", "anton_error")

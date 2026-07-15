@@ -18,6 +18,10 @@ os.environ["COWORK_PUBLIC_BASE_URL"] = "https://hooks.example.com"
 os.environ["COWORK_CONVERSATION_LINK_TEMPLATE"] = "https://app.example.com/c/{conversation_id}"
 os.environ["COWORK_PROJECTS_DIR"] = str(TMP / "projects")
 os.environ["ENV"] = "test"
+# Clear ambient provider API keys to ensure test settings isolation.
+os.environ.pop("OPENAI_API_KEY", None)
+os.environ.pop("ANTHROPIC_API_KEY", None)
+
 
 import pytest
 from sqlmodel import Session, SQLModel
