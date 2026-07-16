@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 from sqlmodel import Session
 
 from cowork.db.session import get_session
@@ -128,14 +128,25 @@ def install_status():
     return {"antonInstalled": True, "serverDepsReady": True}
 
 
+# Plain SecretStr settings fields revealed by name, not routed through a
+# provider (google_oauth_client_secret isn't an LLM provider key, so it isn't
+# in UI_TYPE_TO_PROVIDER — a prior rewrite dropped this direct path entirely,
+# 404ing every reveal of the stored Google OAuth secret).
+_DIRECT_REVEAL_FIELDS = {"google_oauth_client_secret"}
+
+
 @router.get("/reveal-key/{name}")
 def reveal_key(name: str, session: SessionDep):
     from cowork.common.settings.user_settings import UI_TYPE_TO_PROVIDER
 
-    if name.lower() not in UI_TYPE_TO_PROVIDER:
-        raise HTTPException(status_code=404, detail="Unknown key name")
     s = SettingService(session).load()
-    return {"value": resolve_stored_key(s, name.lower())}
+    key = name.lower()
+    if key in _DIRECT_REVEAL_FIELDS:
+        value = getattr(s, key, None)
+        return {"value": value.get_secret_value() if isinstance(value, SecretStr) else (value or "")}
+    if key not in UI_TYPE_TO_PROVIDER:
+        raise HTTPException(status_code=404, detail="Unknown key name")
+    return {"value": resolve_stored_key(s, key)}
 
 
 class _TestProvidersBody(BaseModel):

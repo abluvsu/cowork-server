@@ -224,9 +224,15 @@ def _find_omniroute_binary() -> str | None:
 
 
 def _omniroute_spawn_args(binary: str) -> list[str]:
+    # Pin the port and suppress the dashboard browser-popup. A bare
+    # `omniroute` walks to other ports when 20128 is contested — observed
+    # 2026-07-16: a double-spawn race left an instance on :20131 whose web
+    # dashboard squatted vite's :5173. Pinning makes the loser of a spawn
+    # race fail instead of walking.
+    serve_args = ["serve", "--port", "20128", "--no-open"]
     if platform.system() == "Windows":
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/c", binary]
-    return [binary]
+        return [os.environ.get("COMSPEC", "cmd.exe"), "/c", binary, *serve_args]
+    return [binary, *serve_args]
 
 
 def get_registry() -> LocalServiceRegistry:

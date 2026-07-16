@@ -191,6 +191,12 @@ class ResponsesHandler:
         user message; on terminal we persist user + assistant together.
         Never reaches the HTTP response — readers tail the buffer.
         """
+        # A dedicated session: this coroutine is spawned as a DETACHED task
+        # (see RunRegistry.start) and keeps running after the HTTP request
+        # that constructed self.session returns and its `Depends(get_session)`
+        # dependency closes that session. Using self.session here shares a
+        # session across that boundary — reusing it after the request-scoped
+        # `finally: db.close()` runs.
         own = get_open_session()
         collected_text: list[str] = []
         pending_events: list[dict] = []
@@ -200,7 +206,7 @@ class ResponsesHandler:
             if event_type == "response.output_text.delta":
                 collected_text.append(data.get("delta", ""))
 
-        conversation_service = ConversationService(self.session)
+        conversation_service = ConversationService(own)
         conversation = conversation_service.get_conversation(conv_id)
         stream = self.harness.stream_response(
             conversation=conversation,
@@ -294,6 +300,7 @@ class ResponsesHandler:
                 conversation_service.finalize_assistant_turn(
                     assistant_message_id, "".join(collected_text),
                 )
+            own.close()
 
     async def _run_produce(self, **kwargs) -> None:
         buffer = kwargs.get("buffer")

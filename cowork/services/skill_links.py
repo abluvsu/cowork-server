@@ -39,11 +39,15 @@ def _ensure_symlink(link: Path, target: Path) -> None:
             return
         link.unlink()
     elif link.exists():
-        import shutil
-        if link.is_dir():
-            shutil.rmtree(link)
-        else:
-            link.unlink()
+        # Symlinks only (see module docstring) — a real file/dir sitting at
+        # this path is someone's actual content (hand-authored skill files,
+        # or a leftover from a misconfigured filesystem), not ours to
+        # silently delete on a routine reconcile pass (boot / skill toggle /
+        # project creation).
+        raise RuntimeError(
+            f"Cannot link skill into {link}: a real file/directory already exists there "
+            "(expected a symlink or nothing). Remove it manually to let the skill link in."
+        )
     link.parent.mkdir(parents=True, exist_ok=True)
     try:
         link.symlink_to(target, target_is_directory=True)
@@ -59,11 +63,11 @@ def _remove_link(link: Path) -> None:
     if link.is_symlink() or (hasattr(link, "is_junction") and link.is_junction()):
         link.unlink()
     elif link.exists():
-        import shutil
-        if link.is_dir():
-            shutil.rmtree(link)
-        else:
-            link.unlink()
+        # See _ensure_symlink: a real file/dir here isn't ours to delete.
+        raise RuntimeError(
+            f"Cannot remove skill link at {link}: a real file/directory sits there "
+            "(expected a symlink or nothing). Remove it manually."
+        )
 
 
 def reconcile_skill_links(skill: Skill) -> None:

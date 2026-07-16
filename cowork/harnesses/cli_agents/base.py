@@ -430,6 +430,10 @@ class BaseCliHarness:
             proc.wait(timeout=TURN_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
             emit(NormalizedEvent(type="error", detail=f"{self.label} turn timed out after {TURN_TIMEOUT_SECONDS}s and was terminated."))
             emit(NormalizedEvent(type="completed", final_text=""))
             return
@@ -438,8 +442,14 @@ class BaseCliHarness:
             # mid-stream must not leave a headless CLI running (leaked
             # children accumulate and eventually make ALL spawns flaky —
             # 0xC0000142-style init failures under resource pressure).
+            # kill() alone doesn't reap it — wait() is required or the
+            # process lingers as a zombie until this Popen object is GC'd.
             if proc.poll() is None:
                 proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
             try:
                 if proc.stderr is not None:
                     stderr_tail = proc.stderr.read()[-2000:]
